@@ -57,7 +57,19 @@ jobs:
           } > issue.md
           cat issue.md >> "$GITHUB_STEP_SUMMARY"
 
+      # Pull Requests (v. a. von Dependabot) laufen nur mit Leserechten: dort kein Issue, nur Fehlschlag bei Funden
+      - name: Pull Request – bei Funden fehlschlagen
+        if: github.event_name == 'pull_request'
+        env:
+          ADVISORIES: ${{ steps.audit.outputs.advisories }}
+        run: |
+          if [ "$ADVISORIES" -gt 0 ]; then
+            echo "::error::$ADVISORIES bekannte Sicherheitslücke(n) – Details in der Zusammenfassung des Laufs."
+            exit 1
+          fi
+
       - name: Issue anlegen, aktualisieren oder schließen
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           ADVISORIES: ${{ steps.audit.outputs.advisories }}
