@@ -1,0 +1,32 @@
+# Automatische Update-PRs (GitHub Dependabot). Sicherheits-Updates kommen zusätzlich sofort,
+# wenn im Repo unter Settings → Code security "Dependabot security updates" aktiv ist.
+version: 2
+updates:
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    groups:
+      # TYPO3-Core-Pakete gemeinsam aktualisieren (ein PR pro Patch/Minor-Release)
+      typo3-core:
+        patterns:
+          - 'typo3/cms-*'
+          - 'typo3/minimal'
+        update-types: [minor, patch]
+      # alle übrigen Pakete gesammelt
+      sonstige:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # Major-Upgrades (z. B. TYPO3 15) bewusst manuell
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,23 @@
+# Sicherheitsprüfung der Abhängigkeiten (zentraler Workflow aus worldwideweber/.github):
+# Funde landen als Issue "Sicherheitslücken in Abhängigkeiten" in diesem Repo.
+name: Security audit
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'   # montags 05:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [composer.lock]
+  # auch Update-PRs (z. B. von Dependabot) vor dem Merge prüfen – dort nur Prüfung, kein Issue
+  pull_request:
+    paths: [composer.lock]
+
+jobs:
+  audit:
+    uses: worldwideweber/.github/.github/workflows/composer-audit.yml@main
+    with:
+      php-version: '__PHP__'
+    permissions:
+      contents: read
+      issues: write

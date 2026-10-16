@@ -38,7 +38,21 @@ jobs:
       issues: write
 ```
 
-Dazu im Projekt `.github/dependabot.yml` (Vorlage: `www-typo3-fzn`) für automatische Update-PRs.
+Dazu im Projekt `.github/dependabot.yml` (Vorlage: `vorlagen/dependabot.yml`) für automatische Update-PRs.
+
+## Monitoring für ein neues Projekt einrichten
+
+`bin/monitoring-einrichten.sh` legt im Projekt `.github/dependabot.yml` und `.github/workflows/audit.yml` an
+(Vorlagen in `vorlagen/`, PHP-Version aus der `composer.json`) und trägt auf Wunsch die Live-Domain in die
+Uptime-Überwachung ([worldwideweber/uptime](https://github.com/worldwideweber/uptime)) ein:
+
+```bash
+bin/monitoring-einrichten.sh ~/projects/kunde/kunde --uptime "Kunde GmbH" https://www.kunde.de
+```
+
+- Vorhandene Dateien bleiben unverändert, eine schon überwachte URL wird nicht doppelt eingetragen.
+- Vor jedem Commit fragt das Skript nach. Das Projekt pushst du selbst, das Uptime-Repo pusht es nach dem „j“.
+- Danach von Hand auf GitHub: Dependabot alerts/security updates einschalten, Watch einstellen, Audit einmal starten.
 
 ## Benachrichtigungen
 
