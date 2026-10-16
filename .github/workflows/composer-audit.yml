@@ -1,0 +1,78 @@
+# Wiederverwendbarer Workflow: prüft composer.lock auf bekannte Sicherheitslücken (Packagist/GitHub Advisories,
+# inkl. TYPO3-Core und TER-Extensions) und meldet Funde als Issue im aufrufenden Repo.
+# - Funde vorhanden  → Issue "Sicherheitslücken in Abhängigkeiten" anlegen bzw. aktualisieren (Label "security")
+# - keine Funde      → offenes Issue mit Kommentar schließen
+# Aufruf aus einem Projekt: siehe Vorlage in README.md dieses Repos.
+name: Composer audit
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: PHP-Version des Projekts
+        type: string
+        default: '8.4'
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+          coverage: none
+
+      - name: composer audit
+        id: audit
+        run: |
+          set +e
+          composer audit --locked --no-interaction --format=json --abandoned=report > audit.json
+          set -e
+          advisories=$(jq '[.advisories[]? | .[]?] | length' audit.json)
+          abandoned=$(jq '.abandoned // {} | length' audit.json)
+          echo "advisories=$advisories" >> "$GITHUB_OUTPUT"
+          echo "abandoned=$abandoned" >> "$GITHUB_OUTPUT"
+          {
+            echo "Automatische Prüfung von \`composer.lock\` (Workflow-Lauf: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            echo
+            echo "## Sicherheitslücken ($advisories)"
+            echo
+            echo "| Paket | Betroffene Versionen | Titel | CVE | Link |"
+            echo "|---|---|---|---|---|"
+            jq -r '.advisories[]? | .[]? | "| \(.packageName) | `\(.affectedVersions)` | \(.title) | \(.cve // "–") | \(.link // "–") |"' audit.json
+            if [ "$abandoned" -gt 0 ]; then
+              echo
+              echo "## Nicht mehr gepflegte Pakete ($abandoned)"
+              echo
+              jq -r '.abandoned | to_entries[] | "- \(.key) → Ersatz: \(.value // "keiner angegeben")"' audit.json
+            fi
+            echo
+            echo "Behebung: betroffene Pakete aktualisieren (\`ddev composer update <paket> -W\`) bzw. den Dependabot-PR mergen."
+          } > issue.md
+          cat issue.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Issue anlegen, aktualisieren oder schließen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADVISORIES: ${{ steps.audit.outputs.advisories }}
+        run: |
+          title="Sicherheitslücken in Abhängigkeiten"
+          gh label create security --color B60205 --description "Sicherheitsrelevant" --force >/dev/null
+          number=$(gh issue list --state open --label security --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ "$ADVISORIES" -gt 0 ]; then
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --body-file issue.md
+              gh issue comment "$number" --body "Erneut geprüft: weiterhin $ADVISORIES Sicherheitslücke(n)."
+            else
+              gh issue create --title "$title" --label security --body-file issue.md
+            fi
+            exit 1
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "Erneut geprüft: keine bekannten Sicherheitslücken mehr."
+          fi
