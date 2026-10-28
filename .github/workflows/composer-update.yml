@@ -1,0 +1,90 @@
+# Wiederverwendbarer Workflow: spielt Composer-Updates automatisch ein und deployt sie.
+# - composer update -W im Rahmen der Versionsangaben in composer.json (z. B. ^14.3 → keine Major-Updates)
+# - Prüfung vor dem Commit: composer validate, composer audit, Build ohne Entwicklungspakete wie beim Deployment
+# - neue composer.lock direkt auf den Branch committen und den Deploy-Workflow starten
+#   (Pushes mit dem GITHUB_TOKEN lösen keine anderen Workflows aus, daher der ausdrückliche Start)
+# Ersetzt Dependabot für Composer: Dependabot aktualisiert die TYPO3-Core-Pakete einzeln, was nie aufgeht.
+# Aufruf aus einem Projekt: siehe Vorlage in README.md dieses Repos.
+name: Composer update
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: PHP-Version des Projekts
+        type: string
+        default: '8.4'
+      branch:
+        description: Branch, auf den die Updates committet werden
+        type: string
+        default: main
+      deploy-workflow:
+        description: Workflow-Datei, die danach gestartet wird (leer = kein Deployment)
+        type: string
+        default: deploy.yml
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.branch }}
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+          coverage: none
+
+      - name: composer update
+        id: update
+        run: |
+          cp composer.lock "$RUNNER_TEMP/composer.lock.alt"
+          composer update --with-all-dependencies --no-interaction --no-progress
+          if git diff --quiet composer.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Keine Updates verfügbar – alles aktuell." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          jq -rn --slurpfile alt "$RUNNER_TEMP/composer.lock.alt" --slurpfile neu composer.lock '
+            def versionen(l): [l[0].packages[], l[0]["packages-dev"][]?] | map({(.name): .version}) | add;
+            versionen($alt) as $a
+            | versionen($neu) | to_entries[] | select($a[.key] != .value)
+            | "| \(.key) | \($a[.key] // "neu") | \(.value) |"' > "$RUNNER_TEMP/pakete.md"
+          {
+            echo "## Aktualisierte Pakete ($(wc -l < "$RUNNER_TEMP/pakete.md"))"
+            echo
+            echo "| Paket | Vorher | Neu |"
+            echo "|---|---|---|"
+            cat "$RUNNER_TEMP/pakete.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prüfen
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          composer validate --no-check-publish
+          composer audit --locked --no-interaction --abandoned=report
+          composer install --no-dev --no-interaction --no-progress --optimize-autoloader
+
+      - name: Committen und pushen
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add composer.lock
+          git commit -q -m "Update dependencies" -m "$(sed -E 's/^\| (.*) \| (.*) \| (.*) \|$/- \1: \2 → \3/' "$RUNNER_TEMP/pakete.md")"
+          git push origin "HEAD:${{ inputs.branch }}"
+
+      - name: Deployment starten
+        if: steps.update.outputs.changed == 'true' && inputs.deploy-workflow != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run "${{ inputs.deploy-workflow }}" --ref "${{ inputs.branch }}"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployment gestartet: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/${{ inputs.deploy-workflow }}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Richtet das Monitoring für ein Projekt ein:
-#   1. Dependabot + wöchentlicher composer audit (.github/dependabot.yml, .github/workflows/audit.yml)
+#   1. tägliche Composer-Updates mit Deployment, wöchentlicher composer audit, Dependabot für GitHub Actions
+#      (.github/workflows/update.yml, .github/workflows/audit.yml, .github/dependabot.yml)
 #   2. optional: Eintrag der Live-Domain in die Uptime-Überwachung (Repo worldwideweber/uptime)
 #
 # Aufruf:
@@ -52,7 +53,7 @@ print(f"{m.group(1)}.{m.group(2)}" if m else "8.4")
 ' "$PROJEKT/composer.json")"
 fi
 
-echo "== 1. Dependabot + Audit in $PROJEKT (PHP $PHP)"
+echo "== 1. Updates + Audit in $PROJEKT (PHP $PHP)"
 mkdir -p "$PROJEKT/.github/workflows"
 GEAENDERT=()
 if [[ -e "$PROJEKT/.github/dependabot.yml" ]]; then
@@ -62,20 +63,22 @@ else
     GEAENDERT+=(.github/dependabot.yml)
     echo "   .github/dependabot.yml angelegt"
 fi
-if [[ -e "$PROJEKT/.github/workflows/audit.yml" ]]; then
-    echo "   .github/workflows/audit.yml gibt es schon – bleibt unverändert"
-else
-    sed "s/__PHP__/$PHP/" "$VORLAGEN/workflows/audit.yml" > "$PROJEKT/.github/workflows/audit.yml"
-    GEAENDERT+=(.github/workflows/audit.yml)
-    echo "   .github/workflows/audit.yml angelegt"
-fi
+for WORKFLOW in audit update; do
+    if [[ -e "$PROJEKT/.github/workflows/$WORKFLOW.yml" ]]; then
+        echo "   .github/workflows/$WORKFLOW.yml gibt es schon – bleibt unverändert"
+    else
+        sed "s/__PHP__/$PHP/" "$VORLAGEN/workflows/$WORKFLOW.yml" > "$PROJEKT/.github/workflows/$WORKFLOW.yml"
+        GEAENDERT+=(".github/workflows/$WORKFLOW.yml")
+        echo "   .github/workflows/$WORKFLOW.yml angelegt"
+    fi
+done
 
 if [[ ${#GEAENDERT[@]} -gt 0 ]]; then
     BRANCH="$(git -C "$PROJEKT" branch --show-current)"
     echo "   Aktueller Branch im Projekt: $BRANCH"
     if frage "   Diese Dateien im Projekt committen?"; then
         git -C "$PROJEKT" add "${GEAENDERT[@]}"
-        git -C "$PROJEKT" commit -m "Add Dependabot and weekly security audit"
+        git -C "$PROJEKT" commit -m "Add automatic updates and weekly security audit"
         echo "   Committet. Pushen musst du selbst: git -C \"$PROJEKT\" push"
     else
         echo "   Nicht committet."
@@ -124,7 +127,10 @@ fi
 cat <<EOF
 
 == Noch von Hand (einmal pro Repo, auf GitHub):
-   - Settings → Code security → "Dependabot alerts" und "Dependabot security updates" einschalten
+   - Settings → Code security → "Dependabot alerts" einschalten ("security updates" bleibt aus,
+     die Updates spielt update.yml ein)
    - Watch → Custom → Issues, Pull requests, Security alerts (damit Funde per Mail kommen)
-   - Actions → "Security audit" → Run workflow (einmal testen)
+   - Actions → "Security audit" und "Composer update" → Run workflow (einmal testen)
+   - Deployment muss per workflow_dispatch startbar sein und main darf nicht gegen direkte Pushes
+     geschützt sein, sonst kann update.yml nicht committen
 EOF

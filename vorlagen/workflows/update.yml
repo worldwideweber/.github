@@ -1,0 +1,18 @@
+# Automatische Updates der Abhängigkeiten (zentraler Workflow aus worldwideweber/.github):
+# täglich composer update im Rahmen der composer.json, prüfen, auf main committen und deployen.
+# Ergebnis jedes Laufs: Actions → "Composer update" → Lauf → Summary.
+name: Composer update
+
+on:
+  schedule:
+    - cron: '30 3 * * *'   # täglich 03:30 UTC
+  workflow_dispatch:
+
+jobs:
+  update:
+    uses: worldwideweber/.github/.github/workflows/composer-update.yml@main
+    with:
+      php-version: '__PHP__'
+    permissions:
+      contents: write
+      actions: write
