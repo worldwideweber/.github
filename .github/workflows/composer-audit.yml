@@ -2,6 +2,7 @@
 # inkl. TYPO3-Core und TER-Extensions) und meldet Funde als Issue im aufrufenden Repo.
 # - Funde vorhanden  → Issue "Sicherheitslücken in Abhängigkeiten" anlegen bzw. aktualisieren (Label "security")
 # - keine Funde      → offenes Issue mit Kommentar schließen
+# Zusätzlich listet die Zusammenfassung jedes Laufs die verfügbaren Updates der direkten Abhängigkeiten.
 # Aufruf aus einem Projekt: siehe Vorlage in README.md dieses Repos.
 name: Composer audit
 
@@ -56,6 +57,26 @@ jobs:
             echo "Behebung: betroffene Pakete aktualisieren (\`ddev composer update <paket> -W\`) bzw. den Dependabot-PR mergen."
           } > issue.md
           cat issue.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Nur Bericht in der Zusammenfassung des Laufs, kein Issue und kein Fehlschlag
+      - name: Verfügbare Updates
+        run: |
+          set +e
+          composer outdated --locked --direct --no-interaction --format=json > outdated.json
+          set -e
+          count=$(jq '[.locked[]?] | length' outdated.json)
+          {
+            echo
+            echo "## Verfügbare Updates ($count)"
+            echo
+            if [ "$count" -gt 0 ]; then
+              echo "| Paket | Installiert | Neueste | Art | Veröffentlicht |"
+              echo "|---|---|---|---|---|"
+              jq -r '.locked[] | "| \(.name) | \(.version) | \(.latest) | \(if ."latest-status" == "semver-safe-update" then "Minor/Patch" else "Major" end) | \((."latest-release-date" // "–") | .[0:10]) |"' outdated.json
+            else
+              echo "Alle direkten Abhängigkeiten sind aktuell."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Pull Requests (v. a. von Dependabot) laufen nur mit Leserechten: dort kein Issue, nur Fehlschlag bei Funden
       - name: Pull Request – bei Funden fehlschlagen
