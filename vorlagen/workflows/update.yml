@@ -1,5 +1,9 @@
-# Automatische Updates der Abhängigkeiten (zentraler Workflow aus worldwideweber/.github):
-# täglich composer update im Rahmen der composer.json, prüfen, auf main committen und deployen.
+# Automatische Updates der Abhängigkeiten (zentraler Workflow aus worldwideweber/.github) – in allen Projekten gleich:
+# täglich composer update im Rahmen der composer.json, prüfen, committen, deployen.
+# Der Weg ergibt sich aus config/deploy/hosts.yaml: mit Testseite dev → staging → (nach grünem Staging-Deployment)
+# Live, ohne Testseite direkt Live. Live nur mit der Repo-Variable AUTO_UPDATE_LIVE = true
+# (Settings → Secrets and variables → Actions → Variables) – beim Go-live setzen.
+# Lokal vor dem Weiterarbeiten: git pull und ddev composer install (der Bot committet wie ein Kollege).
 # Ergebnis jedes Laufs: Actions → "Composer update" → Lauf → Summary.
 name: Composer update
 
@@ -13,6 +17,7 @@ jobs:
     uses: worldwideweber/.github/.github/workflows/composer-update.yml@main
     with:
       php-version: '__PHP__'
+      live: ${{ vars.AUTO_UPDATE_LIVE == 'true' }}
     permissions:
       contents: write
       actions: write

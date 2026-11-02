@@ -56,9 +56,11 @@ fi
 echo "== 1. Updates + Audit in $PROJEKT (PHP $PHP)"
 mkdir -p "$PROJEKT/.github/workflows"
 GEAENDERT=()
-if [[ -e "$PROJEKT/.github/dependabot.yml" ]]; then
+if [[ -e "$PROJEKT/.github/dependabot.yml" ]] && ! grep -q "package-ecosystem: composer" "$PROJEKT/.github/dependabot.yml"; then
     echo "   .github/dependabot.yml gibt es schon – bleibt unverändert"
 else
+    # Eine alte dependabot.yml mit Composer-Eintrag wird ersetzt: für TYPO3 funktioniert sie nicht
+    [[ -e "$PROJEKT/.github/dependabot.yml" ]] && echo "   .github/dependabot.yml hat einen Composer-Eintrag – wird durch die Vorlage ersetzt"
     cp "$VORLAGEN/dependabot.yml" "$PROJEKT/.github/dependabot.yml"
     GEAENDERT+=(.github/dependabot.yml)
     echo "   .github/dependabot.yml angelegt"
@@ -131,6 +133,11 @@ cat <<EOF
      die Updates spielt update.yml ein)
    - Watch → Custom → Issues, Pull requests, Security alerts (damit Funde per Mail kommen)
    - Actions → "Security audit" und "Composer update" → Run workflow (einmal testen)
-   - Deployment muss per workflow_dispatch startbar sein und main darf nicht gegen direkte Pushes
-     geschützt sein, sonst kann update.yml nicht committen
+   - Deployment muss per workflow_dispatch startbar sein; dev, staging und main dürfen nicht gegen
+     direkte Pushes geschützt sein, sonst kann update.yml nicht committen
+   - Standard-Branch = Branch, auf dem gearbeitet wird (mit Testseite: dev), damit der Audit diesen Stand prüft
+   - Live automatisch aktualisieren: Settings → Secrets and variables → Actions → Variables →
+     AUTO_UPDATE_LIVE = true – erst beim Go-live setzen. Mit Testseite (staging in hosts.yaml) geht jedes
+     Update erst dorthin, Live nur nach grünem Staging-Deployment.
+   - Lokal vor dem Weiterarbeiten: git pull und ddev composer install (der Bot committet wie ein Kollege)
 EOF

@@ -1,10 +1,16 @@
-# Wiederverwendbarer Workflow: spielt Composer-Updates automatisch ein und deployt sie.
+# Wiederverwendbarer Workflow: spielt Composer-Updates automatisch ein und deployt sie – für alle Projekte gleich.
 # - composer update -W im Rahmen der Versionsangaben in composer.json (z. B. ^14.3 → keine Major-Updates)
 # - Prüfung vor dem Commit: composer validate, composer audit, Build ohne Entwicklungspakete wie beim Deployment
-# - neue composer.lock direkt auf den Branch committen und den Deploy-Workflow starten
-#   (Pushes mit dem GITHUB_TOKEN lösen keine anderen Workflows aus, daher der ausdrückliche Start)
+# - Commit wie von einem Kollegen: lokal vor dem Weiterarbeiten "git pull" und "ddev composer install"
 # Ersetzt Dependabot für Composer: Dependabot aktualisiert die TYPO3-Core-Pakete einzeln, was nie aufgeht.
-# Aufruf aus einem Projekt: siehe Vorlage in README.md dieses Repos.
+#
+# Der Weg ergibt sich aus config/deploy/hosts.yaml des Projekts:
+# - Testseite eingetragen (Ziel "staging" mit hostname): Update auf dev (gibt es keinen dev, auf staging),
+#   derselbe Stand auf staging, Testseite deployen – erst wenn das grün ist, dasselbe Update auf den
+#   Live-Branch und Live deployen
+# - keine Testseite: Update direkt auf den Live-Branch und Live deployen
+# Live wird nur angefasst, wenn "live" true ist (im Projekt: Repo-Variable AUTO_UPDATE_LIVE) und das Ziel
+# "live" einen hostname hat. Ohne Testseite und ohne Live passiert nichts.
 name: Composer update
 
 on:
@@ -14,25 +20,78 @@ on:
         description: PHP-Version des Projekts
         type: string
         default: '8.4'
-      branch:
-        description: Branch, auf den die Updates committet werden
+      live:
+        description: Live automatisch aktualisieren (im Projekt aus der Repo-Variable AUTO_UPDATE_LIVE)
+        type: boolean
+        default: true
+      dev-branch:
+        description: Entwicklungs-Branch bei Projekten mit Testseite
         type: string
-        default: main
+        default: dev
       deploy-workflow:
-        description: Workflow-Datei, die danach gestartet wird (leer = kein Deployment)
+        description: Workflow-Datei für das Deployment (leer = nur committen)
         type: string
         default: deploy.yml
 
 jobs:
+  # Aus hosts.yaml ermitteln, welche Branches aktualisiert werden
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      work: ${{ steps.plan.outputs.work }}
+      staging: ${{ steps.plan.outputs.staging }}
+      live: ${{ steps.plan.outputs.live }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Weg festlegen
+        id: plan
+        env:
+          LIVE_ENABLED: ${{ inputs.live }}
+          DEV_BRANCH: ${{ inputs.dev-branch }}
+        run: |
+          hosts=config/deploy/hosts.yaml
+          # Branch eines Ziels, wenn es einen Server hat
+          target_branch() {
+            [ -f "$hosts" ] || return 0
+            yq -r ".$1 | select((.hostname // \"\") != \"\" and (.deploy_path // \"\") != \"\") | .branch // \"\"" "$hosts"
+          }
+          staging=$(target_branch staging)
+          live=$(target_branch live)
+          [ -f "$hosts" ] || live=main   # Projekt ohne Deployer-Konfiguration: einstufig auf main
+          [ "$LIVE_ENABLED" = "true" ] || live=""
+
+          if [ -n "$staging" ]; then
+            if git ls-remote --exit-code --heads origin "$DEV_BRANCH" > /dev/null; then work=$DEV_BRANCH; else work=$staging; fi
+            echo "Weg: $work → $staging (Testseite)${live:+ → $live (Live, nach grünem Staging-Deployment)}" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$live" ]; then
+            work=$live
+            echo "Weg: $live (Live, keine Testseite eingetragen)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            work=""
+            echo "Nichts zu tun: keine Testseite eingetragen und Live nicht freigegeben (AUTO_UPDATE_LIVE)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          { echo "work=$work"; echo "staging=$staging"; echo "live=$live"; } >> "$GITHUB_OUTPUT"
+
+  # Erster Branch: Entwicklung/Testseite – oder direkt Live, wenn es keine Testseite gibt
   update:
+    needs: plan
+    if: needs.plan.outputs.work != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       actions: write
+    env:
+      WORK: ${{ needs.plan.outputs.work }}
+      STAGING: ${{ needs.plan.outputs.staging }}
+      LIVE: ${{ needs.plan.outputs.live }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ needs.plan.outputs.work }}
+          fetch-depth: 0
 
       - uses: shivammathur/setup-php@v2
         with:
@@ -47,7 +106,7 @@ jobs:
           composer update --with-all-dependencies --no-interaction --no-progress
           if git diff --quiet composer.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Keine Updates verfügbar – alles aktuell." >> "$GITHUB_STEP_SUMMARY"
+            echo "$WORK: keine Updates verfügbar – alles aktuell." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -57,7 +116,7 @@ jobs:
             | versionen($neu) | to_entries[] | select($a[.key] != .value)
             | "| \(.key) | \($a[.key] // "neu") | \(.value) |"' > "$RUNNER_TEMP/pakete.md"
           {
-            echo "## Aktualisierte Pakete ($(wc -l < "$RUNNER_TEMP/pakete.md"))"
+            echo "## $WORK: aktualisierte Pakete ($(wc -l < "$RUNNER_TEMP/pakete.md"))"
             echo
             echo "| Paket | Vorher | Neu |"
             echo "|---|---|---|"
@@ -78,13 +137,103 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add composer.lock
           git commit -q -m "Update dependencies" -m "$(sed -E 's/^\| (.*) \| (.*) \| (.*) \|$/- \1: \2 → \3/' "$RUNNER_TEMP/pakete.md")"
-          git push origin "HEAD:${{ inputs.branch }}"
+          git push origin "HEAD:$WORK"
+          # Die Testseite bekommt denselben Stand – nur als Fast-Forward, nie überschreiben
+          if [ -n "$STAGING" ] && [ "$STAGING" != "$WORK" ]; then
+            git fetch -q origin "$STAGING"
+            if ! git merge-base --is-ancestor FETCH_HEAD HEAD; then
+              echo "::error::$STAGING enthält Commits, die $WORK nicht hat – Testseite nicht aktualisiert, Live übersprungen."
+              exit 1
+            fi
+            git push origin "HEAD:$STAGING"
+          fi
 
+      # Pushes mit dem GITHUB_TOKEN lösen keine anderen Workflows aus, daher der ausdrückliche Start.
+      # Folgt danach Live, wird auf das Staging-Deployment gewartet: Live nur, wenn es grün ist.
       - name: Deployment starten
         if: steps.update.outputs.changed == 'true' && inputs.deploy-workflow != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ inputs.deploy-workflow }}
         run: |
-          gh workflow run "${{ inputs.deploy-workflow }}" --ref "${{ inputs.branch }}"
-          echo >> "$GITHUB_STEP_SUMMARY"
-          echo "Deployment gestartet: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/${{ inputs.deploy-workflow }}" >> "$GITHUB_STEP_SUMMARY"
+          ref=${STAGING:-$WORK}
+          start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run "$WORKFLOW" --ref "$ref"
+          echo "Deployment von $ref gestartet: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/$WORKFLOW" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$STAGING" ] && [ -n "$LIVE" ] || exit 0
+          id=""
+          for i in $(seq 1 30); do
+            sleep 10
+            id=$(gh run list --workflow "$WORKFLOW" --branch "$ref" --event workflow_dispatch --limit 5 \
+              --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$start\")][0].databaseId // empty")
+            [ -n "$id" ] && break
+          done
+          [ -n "$id" ] || { echo "::error::Staging-Deployment nicht gefunden – Live übersprungen"; exit 1; }
+          gh run watch "$id" --exit-status --interval 30 > /dev/null
+
+  # Live nach der Testseite: läuft auch, wenn dev schon aktuell war, Live aber noch nicht
+  live:
+    needs: [plan, update]
+    if: needs.plan.outputs.staging != '' && needs.plan.outputs.live != '' && needs.update.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+    env:
+      LIVE: ${{ needs.plan.outputs.live }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.live }}
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+          coverage: none
+
+      - name: composer update
+        id: update
+        run: |
+          cp composer.lock "$RUNNER_TEMP/composer.lock.alt"
+          composer update --with-all-dependencies --no-interaction --no-progress
+          if git diff --quiet composer.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$LIVE: keine Updates verfügbar – alles aktuell." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          jq -rn --slurpfile alt "$RUNNER_TEMP/composer.lock.alt" --slurpfile neu composer.lock '
+            def versionen(l): [l[0].packages[], l[0]["packages-dev"][]?] | map({(.name): .version}) | add;
+            versionen($alt) as $a
+            | versionen($neu) | to_entries[] | select($a[.key] != .value)
+            | "| \(.key) | \($a[.key] // "neu") | \(.value) |"' > "$RUNNER_TEMP/pakete.md"
+          {
+            echo "## $LIVE: aktualisierte Pakete ($(wc -l < "$RUNNER_TEMP/pakete.md"))"
+            echo
+            echo "| Paket | Vorher | Neu |"
+            echo "|---|---|---|"
+            cat "$RUNNER_TEMP/pakete.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prüfen
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          composer validate --no-check-publish
+          composer audit --locked --no-interaction --abandoned=report
+          composer install --no-dev --no-interaction --no-progress --optimize-autoloader
+
+      - name: Committen, pushen und Live deployen
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add composer.lock
+          git commit -q -m "Update dependencies" -m "$(sed -E 's/^\| (.*) \| (.*) \| (.*) \|$/- \1: \2 → \3/' "$RUNNER_TEMP/pakete.md")"
+          git push origin "HEAD:$LIVE"
+          if [ -n "${{ inputs.deploy-workflow }}" ]; then
+            gh workflow run "${{ inputs.deploy-workflow }}" --ref "$LIVE"
+            echo "Live-Deployment gestartet: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/${{ inputs.deploy-workflow }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

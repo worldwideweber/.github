@@ -45,11 +45,26 @@ der direkten Abhängigkeiten.
 
 Führt `composer update -W` im Rahmen der Versionsangaben der `composer.json` aus (bei `^14.3` also keine
 Major-Updates), prüft das Ergebnis (`composer validate`, `composer audit`, Build ohne Entwicklungspakete), committet
-die neue `composer.lock` direkt auf `main` und startet danach den Deploy-Workflow. Die Summary des Laufs zeigt, welche
-Pakete von welcher auf welche Version aktualisiert wurden.
+die neue `composer.lock` und startet das Deployment. Die Summary des Laufs zeigt den Weg und welche Pakete von welcher
+auf welche Version aktualisiert wurden.
 
-Dependabot ist dafür nicht geeignet: Es aktualisiert die TYPO3-Core-Pakete einzeln, Composer lehnt das ab, weil alle
-`typo3/cms-*` dieselbe Version brauchen – und der Dependabot-Lauf ist trotzdem grün („No PRs affected“).
+**Für alle Projekte gleich** – der Weg ergibt sich aus `config/deploy/hosts.yaml`:
+
+| Projekt | Weg |
+|---|---|
+| mit Testseite (`staging` hat `hostname`) | `dev` → `staging`, Testseite deployen → erst wenn das grün ist: Live-Branch, Live deployen |
+| ohne Testseite | direkt Live-Branch (`main`), Live deployen |
+
+- **Live** nur mit der Repo-Variable `AUTO_UPDATE_LIVE` = `true` (Settings → Secrets and variables → Actions →
+  Variables) und wenn das Ziel `live` einen `hostname` hat. Beim Go-live setzen; bis dahin bleibt `main` unverändert.
+- Gibt es keinen `dev`, wird mit Testseite direkt auf `staging` aktualisiert.
+- Hat `staging` Commits, die `dev` nicht hat, bricht der Lauf ab (rot), statt etwas zu überschreiben.
+- **Lokal:** Der Bot committet wie ein Kollege. Vor dem Weiterarbeiten `git pull` und `ddev composer install`.
+  Vergessen ist nicht schlimm: GitHub lehnt den Push dann ab („non-fast-forward“), Pull nachholen.
+
+Dependabot ist für Composer nicht geeignet: Es aktualisiert die TYPO3-Core-Pakete einzeln, Composer lehnt das ab, weil
+alle `typo3/cms-*` dieselbe Version brauchen – und der Dependabot-Lauf ist trotzdem grün („No PRs affected“).
+Dependabot (`vorlagen/dependabot.yml`) bleibt nur für die GitHub Actions zuständig.
 
 Einbinden in einem Projekt (`.github/workflows/update.yml`, Vorlage: `vorlagen/workflows/update.yml`):
 
@@ -66,15 +81,15 @@ jobs:
     uses: worldwideweber/.github/.github/workflows/composer-update.yml@main
     with:
       php-version: '8.4'
+      live: ${{ vars.AUTO_UPDATE_LIVE == 'true' }}
     permissions:
       contents: write
       actions: write
 ```
 
-Voraussetzungen: Der Deploy-Workflow (Standard `deploy.yml`, Input `deploy-workflow`) muss `workflow_dispatch`
-haben, und `main` darf nicht gegen direkte Pushes geschützt sein. Mit `deploy-workflow: ''` wird nur committet.
-
-Dependabot (`vorlagen/dependabot.yml`) bleibt nur für die GitHub Actions zuständig.
+Voraussetzungen: Der Deploy-Workflow (Standard `deploy.yml`, Input `deploy-workflow`) muss `workflow_dispatch` haben,
+`dev`, `staging` und `main` dürfen nicht gegen direkte Pushes geschützt sein. Standard-Branch des Repos = der Branch,
+auf dem gearbeitet wird (mit Testseite `dev`), damit der Audit diesen Stand prüft.
 
 ## Monitoring für ein neues Projekt einrichten
 
@@ -90,8 +105,8 @@ bin/monitoring-einrichten.sh ~/projects/kunde/kunde --uptime "Kunde GmbH" https:
 - Vorhandene Dateien bleiben unverändert, eine schon überwachte URL wird nicht doppelt eingetragen.
 - Vor jedem Commit fragt das Skript nach. Das Projekt pushst du selbst, das Uptime-Repo pusht es nach dem „j“.
 - Danach von Hand auf GitHub: Dependabot alerts einschalten, Watch einstellen, Audit und Update einmal starten.
-- Bei schon eingerichteten Projekten bleibt eine vorhandene `dependabot.yml` unverändert – den Composer-Eintrag dort
-  von Hand entfernen (Vorlage übernehmen).
+- Eine vorhandene `dependabot.yml` mit Composer-Eintrag wird durch die Vorlage ersetzt (für TYPO3 funktioniert
+  Composer dort nicht); andere bleiben unverändert.
 
 ## Benachrichtigungen
 
